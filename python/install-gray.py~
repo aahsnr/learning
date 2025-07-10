@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""
+Gray Library Builder for Fedora Linux
+Builds and installs the Gray SNI (Status Notifier Item) library on Fedora systems.
+
+Gray is an implementation of the SNI protocol for creating system trays.
+Project: https://github.com/Fabric-Development/gray
+"""
+
+import argparse
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+
+
+class GrayBuilder:
+    def __init__(self, prefix="/usr/local", build_dir=None):
+        self.prefix = prefix
+        self.build_dir = build_dir or tempfile.mkdtemp(prefix="gray-build-")
+        self.source_dir = os.path.join(self.build_dir, "gray")
+        self.git_url = "https://github.com/Fabric-Development/gray.git"
+
+        # Fedora dependencies for building Gray
+        self.dependencies = [
+            "git",
+            "meson",
+            "ninja-build",
+            "gcc",
+            "vala",
+            "glib2-devel",
+            "gobject-introspection-devel",
+            "pkgconfig",
+        ]
+
+    def run_cmd(self, cmd, cwd=None):
+        """Run command with error handling."""
+        print(f"→ {' '.join(cmd)}")
+        try:
+            result = subprocess.run(
+                cmd, cwd=cwd, check=True, capture_output=True, text=True
+            )
+            if result.stdout.strip():
+                print(result.stdout)
+            return result
+        except subprocess.CalledProcessError as e:
+            print(f"✗ Command failed: {e}")
+            if e.stderr:
+                print(f"Error: {e.stderr}")
+            sys.exit(1)
+
+    def check_fedora(self):
+        """Verify this is a Fedora-based system."""
+        try:
+            with open("/etc/os-release") as f:
+                content = f.read().lower()
+                if not any(os_id in content for os_id in ["fedora", "rhel", "centos"]):
+                    print("⚠ Warning: Not a Fedora/RHEL/CentOS system")
+        except FileNotFoundError:
+            print("⚠ Warning: Cannot determine OS type")
+
+    def install_deps(self):
+        """Install required dependencies via dnf."""
+        print("📦 Installing dependencies...")
+        self.run_cmd(["sudo", "dnf", "install", "-y"] + self.dependencies)
+
+    def clone_repo(self):
+        """Clone the Gray repository."""
+        print(f"📥 Cloning Gray repository...")
+        if os.path.exists(self.source_dir):
+            shutil.rmtree(self.source_dir)
+        self.run_cmd(["git", "clone", self.git_url, self.source_dir])
+
+    def build_project(self):
+        """Build Gray using meson and ninja."""
+        print("🔨 Building Gray...")
+
+        # Clean existing build
+        build_path = os.path.join(self.source_dir, "build")
+        if os.path.exists(build_path):
+            shutil.rmtree(build_path)
+
+        # Configure build
+        self.run_cmd(
+            ["meson", "setup", "build", f"--prefix={self.prefix}"], cwd=self.source_dir
+        )
+
+        # Compile
+        self.run_cmd(["ninja", "-C", "build"], cwd=self.source_dir)
+
+    def install_project(self):
+        """Install the built project."""
+        print(f"📦 Installing to {self.prefix}...")
+        cmd = ["ninja", "-C", "build", "install"]
+        if self.prefix.startswith("/usr") and os.geteuid() != 0:
+            cmd = ["sudo"] + cmd
+        self.run_cmd(cmd, cwd=self.source_dir)
+
+    def cleanup(self):
+        """Remove temporary build directory."""
+        if os.path.exists(self.build_dir):
+            shutil.rmtree(self.build_dir)
+            print(f"🧹 Cleaned up {self.build_dir}")
+
+    def get_version(self):
+        """Get git version info."""
+        try:
+            result = subprocess.run(
+                ["git", "describe", "--tags", "--always"],
+                cwd=self.source_dir,
+                capture_output=True,
+                text=True,
+            )
+            return result.stdout.strip() if result.returncode == 0 else "unknown"
+        except:
+            return "unknown"
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Build Gray SNI library for Fedora")
+    parser.add_argument(
+        "--prefix",
+        default="/usr/local",
+        help="Installation prefix (default: /usr/local)",
+    )
+    parser.add_argument("--build-dir", help="Custom build directory")
+    parser.add_argument(
+        "--no-deps", action="store_true", help="Skip dependency installation"
+    )
+    parser.add_argument(
+        "--keep-build",
+        action="store_true",
+        help="Keep build directory after installation",
+    )
+
+    args = parser.parse_args()
+
+    builder = GrayBuilder(args.prefix, args.build_dir)
+
+    try:
+        print("🔧 Gray Library Builder for Fedora")
+        print(f"📁 Build directory: {builder.build_dir}")
+        print(f"📁 Install prefix: {builder.prefix}")
+
+        builder.check_fedora()
+
+        if not args.no_deps:
+            builder.install_deps()
+
+        builder.clone_repo()
+        version = builder.get_version()
+        print(f"📋 Version: {version}")
+
+        builder.build_project()
+        builder.install_project()
+
+        print("\n✅ Gray library installed successfully!")
+        print(f"📍 Installation location: {builder.prefix}")
+
+        if builder.prefix != "/usr":
+            print(f"\n💡 To use Gray in your projects, add to your environment:")
+            print(
+                f"   export PKG_CONFIG_PATH={builder.prefix}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            )
+            print(f"   export LD_LIBRARY_PATH={builder.prefix}/lib:$LD_LIBRARY_PATH")
+
+    except KeyboardInterrupt:
+        print("\n❌ Build interrupted")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n❌ Build failed: {e}")
+        sys.exit(1)
+    finally:
+        if not args.keep_build:
+            builder.cleanup()
+
+
+if __name__ == "__main__":
+    main()
